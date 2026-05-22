@@ -1,3 +1,8 @@
+/*
+ * mc_simd_math — single-header AVX2 + FMA math for gamedev.
+ * Copyright (c) 2026 RainbyeKeith. MIT License — see LICENSE file.
+ */
+
 /**
  * @file mc_simd_math.h
  * @brief Single-header AVX2 + FMA math library for gamedev (float / __m256).
@@ -41,6 +46,33 @@
 
 #include <stdint.h>
 #include <immintrin.h>
+
+/* MC_INLINE — force inlining across compilers and optimization levels.
+ * `static inline` alone is only a hint; at -O0/-O1 the compiler may emit a
+ * real call, which kills the whole point (polynomial helpers must fuse into
+ * the caller). Override by defining MC_INLINE before including. */
+#ifndef MC_INLINE
+  #if defined(_MSC_VER)
+    #define MC_INLINE static __forceinline
+  #elif defined(__GNUC__) || defined(__clang__)
+    #define MC_INLINE static inline __attribute__((always_inline))
+  #else
+    #define MC_INLINE static inline
+  #endif
+#endif
+
+/* MC_RESTRICT — pointer non-aliasing hint. Lets the compiler keep output
+ * vectors in registers across writes (relevant for mc_sincos_ps,
+ * mc_normalize_soa_ps). C99+ have `restrict`; MSVC uses __restrict. */
+#ifndef MC_RESTRICT
+  #if defined(_MSC_VER)
+    #define MC_RESTRICT __restrict
+  #elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+    #define MC_RESTRICT restrict
+  #else
+    #define MC_RESTRICT
+  #endif
+#endif
 
 /* =====================================================================
  * 1. CPU FEATURE DETECTION
@@ -88,7 +120,7 @@ typedef struct {
  * Compile this function with baseline flags (not -mavx2) so it runs on
  * unsupported machines without faulting.
  */
-static inline mc_cpu_info_t mc_detect_cpu(void) {
+MC_INLINE mc_cpu_info_t mc_detect_cpu(void) {
     mc_cpu_info_t info = {0};
     int r[4];
     mc_i_cpuid(0, 0, r);
@@ -123,7 +155,7 @@ static inline mc_cpu_info_t mc_detect_cpu(void) {
  * state across context switches. Calling any mc_*_ps function when this
  * returns 0 will raise SIGILL or silently corrupt results.
  */
-static inline int mc_supports_avx2_fma(void) {
+MC_INLINE int mc_supports_avx2_fma(void) {
     mc_cpu_info_t i = mc_detect_cpu();
     return i.has_avx && i.has_avx2 && i.has_fma
         && i.has_osxsave && i.os_ymm_enabled;
@@ -134,35 +166,35 @@ static inline int mc_supports_avx2_fma(void) {
  * ===================================================================== */
 
 /** @brief |x| — clears the sign bit. */
-static inline __m256 mc_abs_ps(__m256 x) {
+MC_INLINE __m256 mc_abs_ps(__m256 x) {
     return _mm256_andnot_ps(_mm256_set1_ps(-0.0f), x);
 }
 
-static inline __m256 mc_min_ps(__m256 a, __m256 b) { return _mm256_min_ps(a, b); }
-static inline __m256 mc_max_ps(__m256 a, __m256 b) { return _mm256_max_ps(a, b); }
+MC_INLINE __m256 mc_min_ps(__m256 a, __m256 b) { return _mm256_min_ps(a, b); }
+MC_INLINE __m256 mc_max_ps(__m256 a, __m256 b) { return _mm256_max_ps(a, b); }
 
 /** @brief clamp(x, lo, hi). */
-static inline __m256 mc_clamp_ps(__m256 x, __m256 lo, __m256 hi) {
+MC_INLINE __m256 mc_clamp_ps(__m256 x, __m256 lo, __m256 hi) {
     return _mm256_min_ps(_mm256_max_ps(x, lo), hi);
 }
 
 /** @brief saturate(x) = clamp(x, 0, 1). */
-static inline __m256 mc_saturate_ps(__m256 x) {
+MC_INLINE __m256 mc_saturate_ps(__m256 x) {
     return mc_clamp_ps(x, _mm256_setzero_ps(), _mm256_set1_ps(1.0f));
 }
 
 /** @brief Linear interpolation: a + t*(b - a), via one FMA. */
-static inline __m256 mc_lerp_ps(__m256 a, __m256 b, __m256 t) {
+MC_INLINE __m256 mc_lerp_ps(__m256 a, __m256 b, __m256 t) {
     return _mm256_fmadd_ps(t, _mm256_sub_ps(b, a), a);
 }
 
 /** @brief Inverse lerp: (x - a) / (b - a). Undefined when a == b. */
-static inline __m256 mc_inverse_lerp_ps(__m256 a, __m256 b, __m256 x) {
+MC_INLINE __m256 mc_inverse_lerp_ps(__m256 a, __m256 b, __m256 x) {
     return _mm256_div_ps(_mm256_sub_ps(x, a), _mm256_sub_ps(b, a));
 }
 
 /** @brief Step: 1.0 if x >= edge else 0.0. */
-static inline __m256 mc_step_ps(__m256 edge, __m256 x) {
+MC_INLINE __m256 mc_step_ps(__m256 edge, __m256 x) {
     __m256 mask = _mm256_cmp_ps(x, edge, _CMP_GE_OQ);
     return _mm256_and_ps(mask, _mm256_set1_ps(1.0f));
 }
@@ -171,7 +203,7 @@ static inline __m256 mc_step_ps(__m256 edge, __m256 x) {
  * @brief Smoothstep: Hermite blend 3t^2 - 2t^3 with t = clamp((x-a)/(b-a), 0, 1).
  * Degenerate a==b returns 0 per lane.
  */
-static inline __m256 mc_smoothstep_ps(__m256 a, __m256 b, __m256 x) {
+MC_INLINE __m256 mc_smoothstep_ps(__m256 a, __m256 b, __m256 x) {
     __m256 num = _mm256_sub_ps(x, a);
     __m256 den = _mm256_sub_ps(b, a);
     __m256 is_zero  = _mm256_cmp_ps(den, _mm256_setzero_ps(), _CMP_EQ_OQ);
@@ -185,7 +217,7 @@ static inline __m256 mc_smoothstep_ps(__m256 a, __m256 b, __m256 x) {
 }
 
 /** @brief Sign: +1 if x>0, -1 if x<0, 0 if x==0. */
-static inline __m256 mc_sign_ps(__m256 x) {
+MC_INLINE __m256 mc_sign_ps(__m256 x) {
     const __m256 zero = _mm256_setzero_ps();
     const __m256 one  = _mm256_set1_ps( 1.0f);
     const __m256 neg  = _mm256_set1_ps(-1.0f);
@@ -198,22 +230,22 @@ static inline __m256 mc_sign_ps(__m256 x) {
 /* ---------- Rounding family ---------- */
 
 /** @brief floor(x) — round toward -inf. */
-static inline __m256 mc_floor_ps(__m256 x) {
+MC_INLINE __m256 mc_floor_ps(__m256 x) {
     return _mm256_round_ps(x, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC);
 }
 
 /** @brief ceil(x) — round toward +inf. */
-static inline __m256 mc_ceil_ps(__m256 x) {
+MC_INLINE __m256 mc_ceil_ps(__m256 x) {
     return _mm256_round_ps(x, _MM_FROUND_TO_POS_INF | _MM_FROUND_NO_EXC);
 }
 
 /** @brief round(x) — round to nearest, ties to even (IEEE default). */
-static inline __m256 mc_round_ps(__m256 x) {
+MC_INLINE __m256 mc_round_ps(__m256 x) {
     return _mm256_round_ps(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
 }
 
 /** @brief trunc(x) — round toward zero (chop the fractional part). */
-static inline __m256 mc_trunc_ps(__m256 x) {
+MC_INLINE __m256 mc_trunc_ps(__m256 x) {
     return _mm256_round_ps(x, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
 }
 
@@ -223,7 +255,7 @@ static inline __m256 mc_trunc_ps(__m256 x) {
  * GLSL-style: fract(-0.3) = 0.7, not -0.3. If you want the truncated form
  * (sign-preserving), use `x - mc_trunc_ps(x)`.
  */
-static inline __m256 mc_fract_ps(__m256 x) {
+MC_INLINE __m256 mc_fract_ps(__m256 x) {
     return _mm256_sub_ps(x, mc_floor_ps(x));
 }
 
@@ -236,7 +268,7 @@ static inline __m256 mc_fract_ps(__m256 x) {
  * Examples (y=10):  mod(13, 10) = 3,  mod(-1, 10) = 9.
  * Undefined when y == 0.
  */
-static inline __m256 mc_mod_ps(__m256 x, __m256 y) {
+MC_INLINE __m256 mc_mod_ps(__m256 x, __m256 y) {
     __m256 q = _mm256_div_ps(x, y);
     return _mm256_fnmadd_ps(y, mc_floor_ps(q), x);   /* x - y*floor(x/y) */
 }
@@ -247,7 +279,7 @@ static inline __m256 mc_mod_ps(__m256 x, __m256 y) {
  * Common uses: wrap world coords for tiling, wrap UV for texture repeat,
  * wrap accumulated angles. Undefined when hi == lo.
  */
-static inline __m256 mc_wrap_ps(__m256 x, __m256 lo, __m256 hi) {
+MC_INLINE __m256 mc_wrap_ps(__m256 x, __m256 lo, __m256 hi) {
     __m256 range = _mm256_sub_ps(hi, lo);
     return _mm256_add_ps(lo, mc_mod_ps(_mm256_sub_ps(x, lo), range));
 }
@@ -259,7 +291,7 @@ static inline __m256 mc_wrap_ps(__m256 x, __m256 lo, __m256 hi) {
  * a single FMA chain to halve the rounding error. Out-of-range x
  * extrapolates linearly. Undefined when a0 == a1.
  */
-static inline __m256 mc_remap_ps(__m256 x,
+MC_INLINE __m256 mc_remap_ps(__m256 x,
                                  __m256 a0, __m256 a1,
                                  __m256 b0, __m256 b1)
 {
@@ -277,7 +309,7 @@ static inline __m256 mc_remap_ps(__m256 x,
  * @p sign. Result has the magnitude of @p mag and the sign of @p sign.
  * Faster than the `copysignf` libc wrapper and SIMD-friendly.
  */
-static inline __m256 mc_copysign_ps(__m256 mag, __m256 sign) {
+MC_INLINE __m256 mc_copysign_ps(__m256 mag, __m256 sign) {
     const __m256 sign_mask = _mm256_set1_ps(-0.0f);          /* 0x80000000 */
     __m256 abs_mag  = _mm256_andnot_ps(sign_mask, mag);       /* clear sign */
     __m256 sign_of  = _mm256_and_ps(sign_mask, sign);         /* keep sign  */
@@ -292,7 +324,7 @@ static inline __m256 mc_copysign_ps(__m256 mag, __m256 sign) {
  * call site reads naturally — `mc_select_ps(cond, then, else)` instead of
  * `blendv(else, then, cond)`. Compiles to a single VBLENDVPS.
  */
-static inline __m256 mc_select_ps(__m256 mask, __m256 on_true, __m256 on_false) {
+MC_INLINE __m256 mc_select_ps(__m256 mask, __m256 on_true, __m256 on_false) {
     return _mm256_blendv_ps(on_false, on_true, mask);
 }
 
@@ -308,7 +340,7 @@ static inline __m256 mc_select_ps(__m256 mask, __m256 on_true, __m256 on_false) 
  *
  * Degenerate a == b returns 0 for all lanes (same convention as smoothstep).
  */
-static inline __m256 mc_smootherstep_ps(__m256 a, __m256 b, __m256 x) {
+MC_INLINE __m256 mc_smootherstep_ps(__m256 a, __m256 b, __m256 x) {
     __m256 num = _mm256_sub_ps(x, a);
     __m256 den = _mm256_sub_ps(b, a);
     __m256 is_zero  = _mm256_cmp_ps(den, _mm256_setzero_ps(), _CMP_EQ_OQ);
@@ -336,7 +368,7 @@ static inline __m256 mc_smootherstep_ps(__m256 a, __m256 b, __m256 x) {
  *   t = mod(x, 2*length);  result = length - |t - length|
  * Symmetric for negative x. Undefined when length <= 0.
  */
-static inline __m256 mc_pingpong_ps(__m256 x, __m256 length) {
+MC_INLINE __m256 mc_pingpong_ps(__m256 x, __m256 length) {
     __m256 two_len = _mm256_add_ps(length, length);
     __m256 t = mc_mod_ps(x, two_len);
     return _mm256_sub_ps(length, mc_abs_ps(_mm256_sub_ps(t, length)));
@@ -347,7 +379,7 @@ static inline __m256 mc_pingpong_ps(__m256 x, __m256 length) {
  *
  * Exact value of +pi wraps to -pi (half-open convention from mc_wrap_ps).
  */
-static inline __m256 mc_wrap_angle_ps(__m256 angle) {
+MC_INLINE __m256 mc_wrap_angle_ps(__m256 angle) {
     const __m256 neg_pi = _mm256_set1_ps(-3.14159265358979323846f);
     const __m256 pos_pi = _mm256_set1_ps( 3.14159265358979323846f);
     return mc_wrap_ps(angle, neg_pi, pos_pi);
@@ -356,12 +388,12 @@ static inline __m256 mc_wrap_angle_ps(__m256 angle) {
 /* ---------- Degree / radian conversion ---------- */
 
 /** @brief Degrees -> radians (multiply by pi/180). */
-static inline __m256 mc_to_radians_ps(__m256 deg) {
+MC_INLINE __m256 mc_to_radians_ps(__m256 deg) {
     return _mm256_mul_ps(deg, _mm256_set1_ps(0.01745329251994329577f));
 }
 
 /** @brief Radians -> degrees (multiply by 180/pi). */
-static inline __m256 mc_to_degrees_ps(__m256 rad) {
+MC_INLINE __m256 mc_to_degrees_ps(__m256 rad) {
     return _mm256_mul_ps(rad, _mm256_set1_ps(57.29577951308232088f));
 }
 
@@ -372,12 +404,12 @@ static inline __m256 mc_to_degrees_ps(__m256 rad) {
  */
 
 /** @brief Per-lane NaN test. NaN is the only value not equal to itself. */
-static inline __m256 mc_is_nan_ps(__m256 x) {
+MC_INLINE __m256 mc_is_nan_ps(__m256 x) {
     return _mm256_cmp_ps(x, x, _CMP_UNORD_Q);
 }
 
 /** @brief Per-lane +/-inf test. */
-static inline __m256 mc_is_inf_ps(__m256 x) {
+MC_INLINE __m256 mc_is_inf_ps(__m256 x) {
     const __m256 inf = _mm256_set1_ps(1.0f / 0.0f);
     return _mm256_cmp_ps(mc_abs_ps(x), inf, _CMP_EQ_OQ);
 }
@@ -388,7 +420,7 @@ static inline __m256 mc_is_inf_ps(__m256 x) {
  * Implemented as `|x| < +inf` with ordered compare; NaN fails ordered
  * comparisons, so the single test catches both cases.
  */
-static inline __m256 mc_is_finite_ps(__m256 x) {
+MC_INLINE __m256 mc_is_finite_ps(__m256 x) {
     const __m256 inf = _mm256_set1_ps(1.0f / 0.0f);
     return _mm256_cmp_ps(mc_abs_ps(x), inf, _CMP_LT_OQ);
 }
@@ -399,7 +431,7 @@ static inline __m256 mc_is_finite_ps(__m256 x) {
  * Ordered compare, so NaN inputs always produce false (correct).
  * For relative tolerance, scale @p eps by max(|a|, |b|) at the call site.
  */
-static inline __m256 mc_approx_equal_ps(__m256 a, __m256 b, __m256 eps) {
+MC_INLINE __m256 mc_approx_equal_ps(__m256 a, __m256 b, __m256 eps) {
     __m256 diff = mc_abs_ps(_mm256_sub_ps(a, b));
     return _mm256_cmp_ps(diff, eps, _CMP_LE_OQ);
 }
@@ -416,7 +448,7 @@ static inline __m256 mc_approx_equal_ps(__m256 a, __m256 b, __m256 eps) {
  */
 
 /** @brief P(x) = c[0] + c[1]x + c[2]x^2 + c[3]x^3. */
-static inline __m256 mc_poly_estrin_deg3_ps(__m256 x, const float* c) {
+MC_INLINE __m256 mc_poly_estrin_deg3_ps(__m256 x, const float* c) {
     __m256 c0 = _mm256_set1_ps(c[0]);
     __m256 c1 = _mm256_set1_ps(c[1]);
     __m256 c2 = _mm256_set1_ps(c[2]);
@@ -428,7 +460,7 @@ static inline __m256 mc_poly_estrin_deg3_ps(__m256 x, const float* c) {
 }
 
 /** @brief P(x) = c[0] + c[1]x + ... + c[4]x^4. */
-static inline __m256 mc_poly_estrin_deg4_ps(__m256 x, const float* c) {
+MC_INLINE __m256 mc_poly_estrin_deg4_ps(__m256 x, const float* c) {
     __m256 c0 = _mm256_set1_ps(c[0]);
     __m256 c1 = _mm256_set1_ps(c[1]);
     __m256 c2 = _mm256_set1_ps(c[2]);
@@ -443,7 +475,7 @@ static inline __m256 mc_poly_estrin_deg4_ps(__m256 x, const float* c) {
 }
 
 /** @brief P(x) = c[0] + c[1]x + ... + c[5]x^5. */
-static inline __m256 mc_poly_estrin_deg5_ps(__m256 x, const float* c) {
+MC_INLINE __m256 mc_poly_estrin_deg5_ps(__m256 x, const float* c) {
     __m256 c0 = _mm256_set1_ps(c[0]);
     __m256 c1 = _mm256_set1_ps(c[1]);
     __m256 c2 = _mm256_set1_ps(c[2]);
@@ -460,7 +492,7 @@ static inline __m256 mc_poly_estrin_deg5_ps(__m256 x, const float* c) {
 }
 
 /** @brief P(x) = c[0] + c[1]x + ... + c[6]x^6. */
-static inline __m256 mc_poly_estrin_deg6_ps(__m256 x, const float* c) {
+MC_INLINE __m256 mc_poly_estrin_deg6_ps(__m256 x, const float* c) {
     __m256 c0 = _mm256_set1_ps(c[0]);
     __m256 c1 = _mm256_set1_ps(c[1]);
     __m256 c2 = _mm256_set1_ps(c[2]);
@@ -479,7 +511,7 @@ static inline __m256 mc_poly_estrin_deg6_ps(__m256 x, const float* c) {
 }
 
 /** @brief P(x) = c[0] + c[1]x + ... + c[8]x^8. */
-static inline __m256 mc_poly_estrin_deg8_ps(__m256 x, const float* c) {
+MC_INLINE __m256 mc_poly_estrin_deg8_ps(__m256 x, const float* c) {
     __m256 c0 = _mm256_set1_ps(c[0]);
     __m256 c1 = _mm256_set1_ps(c[1]);
     __m256 c2 = _mm256_set1_ps(c[2]);
@@ -630,19 +662,19 @@ static const float MC_TANH_COEFFS[5] = {
  * @brief sqrt(x). Maps to VSQRTPS; IEEE 754 correctly-rounded.
  * Negative lanes produce NaN.
  */
-static inline __m256 mc_sqrt_ps(__m256 x) { return _mm256_sqrt_ps(x); }
+MC_INLINE __m256 mc_sqrt_ps(__m256 x) { return _mm256_sqrt_ps(x); }
 
 /**
  * @brief Fast 1/sqrt(x) — hardware seed only, ~11 bits. Particles, LODs.
  * x must be > 0.
  */
-static inline __m256 mc_rsqrt_fast_ps(__m256 x) { return _mm256_rsqrt_ps(x); }
+MC_INLINE __m256 mc_rsqrt_fast_ps(__m256 x) { return _mm256_rsqrt_ps(x); }
 
 /**
  * @brief 1/sqrt(x) with one Newton-Raphson refinement — ~23 bits / ~0.5 ULP.
  * Standard physics / lighting / normal-map precision.
  */
-static inline __m256 mc_rsqrt_ps(__m256 x) {
+MC_INLINE __m256 mc_rsqrt_ps(__m256 x) {
     __m256 y  = _mm256_rsqrt_ps(x);
     __m256 y2 = _mm256_mul_ps(y, y);
     __m256 hx = _mm256_mul_ps(x, y2);
@@ -654,7 +686,7 @@ static inline __m256 mc_rsqrt_ps(__m256 x) {
  * @brief 1/sqrt(x) with two NR iterations — ~24 bits (full mantissa).
  * Use when the last ULP matters.
  */
-static inline __m256 mc_rsqrt_precise_ps(__m256 x) {
+MC_INLINE __m256 mc_rsqrt_precise_ps(__m256 x) {
     const __m256 half = _mm256_set1_ps(0.5f);
     const __m256 ofh  = _mm256_set1_ps(1.5f);
     __m256 y = _mm256_rsqrt_ps(x);
@@ -670,7 +702,9 @@ static inline __m256 mc_rsqrt_precise_ps(__m256 x) {
  * @brief SoA 3D normalize (1x NR precision). 8 vectors at once.
  * Zero-length vectors produce inf/NaN; guard at call site if needed.
  */
-static inline void mc_normalize_soa_ps(__m256* x, __m256* y, __m256* z) {
+MC_INLINE void mc_normalize_soa_ps(__m256* MC_RESTRICT x,
+                                   __m256* MC_RESTRICT y,
+                                   __m256* MC_RESTRICT z) {
     __m256 x2  = _mm256_mul_ps(*x, *x);
     __m256 y2  = _mm256_mul_ps(*y, *y);
     __m256 z2  = _mm256_mul_ps(*z, *z);
@@ -682,7 +716,9 @@ static inline void mc_normalize_soa_ps(__m256* x, __m256* y, __m256* z) {
 }
 
 /** @brief SoA 3D normalize, fast tier (~12 bits). For particles / billboards. */
-static inline void mc_normalize_soa_fast_ps(__m256* x, __m256* y, __m256* z) {
+MC_INLINE void mc_normalize_soa_fast_ps(__m256* MC_RESTRICT x,
+                                        __m256* MC_RESTRICT y,
+                                        __m256* MC_RESTRICT z) {
     __m256 x2  = _mm256_mul_ps(*x, *x);
     __m256 y2  = _mm256_mul_ps(*y, *y);
     __m256 z2  = _mm256_mul_ps(*z, *z);
@@ -701,7 +737,7 @@ static inline void mc_normalize_soa_fast_ps(__m256* x, __m256* y, __m256* z) {
  * @brief Assemble 2^n as float by writing n into the exponent field.
  * Clamps n to [-126, 127] to stay in normal-float range.
  */
-static inline __m256 mc_i_pow2i_ps(__m256i n) {
+MC_INLINE __m256 mc_i_pow2i_ps(__m256i n) {
     n = _mm256_max_epi32(n, _mm256_set1_epi32(-126));
     n = _mm256_min_epi32(n, _mm256_set1_epi32( 127));
     __m256i bits = _mm256_add_epi32(n, _mm256_set1_epi32(127));
@@ -715,7 +751,7 @@ static inline __m256 mc_i_pow2i_ps(__m256i n) {
  * Algorithm: clamp; Cody-Waite reduce by ln2 to r in [-ln2/2, ln2/2];
  * P(r) via Estrin + MC_EXP_COEFFS; scale by 2^n.
  */
-static inline __m256 mc_exp_ps(__m256 x) {
+MC_INLINE __m256 mc_exp_ps(__m256 x) {
     x = _mm256_min_ps(_mm256_max_ps(x, _mm256_set1_ps(-87.3365386f)),
                                        _mm256_set1_ps( 88.7228395f));
     const __m256 log2e = _mm256_set1_ps(1.44269504088896340736f);
@@ -729,7 +765,7 @@ static inline __m256 mc_exp_ps(__m256 x) {
 }
 
 /** @brief 2^x. ~1-2 ULP. */
-static inline __m256 mc_exp2_ps(__m256 x) {
+MC_INLINE __m256 mc_exp2_ps(__m256 x) {
     x = _mm256_min_ps(_mm256_max_ps(x, _mm256_set1_ps(-126.0f)),
                                        _mm256_set1_ps( 127.0f));
     __m256 fn = _mm256_round_ps(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
@@ -745,7 +781,7 @@ static inline __m256 mc_exp2_ps(__m256 x) {
  * x <= 0 returns -inf per lane (no separate NaN for x<0; mask at call site
  * if you need strict IEEE semantics).
  */
-static inline __m256 mc_ln_ps(__m256 x) {
+MC_INLINE __m256 mc_ln_ps(__m256 x) {
     __m256 invalid_mask = _mm256_cmp_ps(x, _mm256_setzero_ps(), _CMP_LE_OQ);
     x = _mm256_blendv_ps(x, _mm256_set1_ps(1.0f), invalid_mask);
 
@@ -789,7 +825,9 @@ static inline __m256 mc_ln_ps(__m256 x) {
 #define MC_PIO2_LO      (-4.3711388286737929e-8f)
 
 /** @brief Compute sin(x) and cos(x) together. */
-static inline void mc_sincos_ps(__m256 x, __m256* s_out, __m256* c_out) {
+MC_INLINE void mc_sincos_ps(__m256 x,
+                            __m256* MC_RESTRICT s_out,
+                            __m256* MC_RESTRICT c_out) {
     __m256 fn = _mm256_round_ps(
         _mm256_mul_ps(x, _mm256_set1_ps(MC_TWO_OVER_PI)),
         _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
@@ -828,12 +866,12 @@ static inline void mc_sincos_ps(__m256 x, __m256* s_out, __m256* c_out) {
 }
 
 /** @brief sin(x). */
-static inline __m256 mc_sin_ps(__m256 x) {
+MC_INLINE __m256 mc_sin_ps(__m256 x) {
     __m256 s, c; mc_sincos_ps(x, &s, &c); return s;
 }
 
 /** @brief cos(x). */
-static inline __m256 mc_cos_ps(__m256 x) {
+MC_INLINE __m256 mc_cos_ps(__m256 x) {
     __m256 s, c; mc_sincos_ps(x, &s, &c); return c;
 }
 
@@ -846,7 +884,7 @@ static inline __m256 mc_cos_ps(__m256 x) {
  * whole function uses a single division.
  */
 
-static inline __m256 mc_tan_ps(__m256 x) {
+MC_INLINE __m256 mc_tan_ps(__m256 x) {
     __m256 fn = _mm256_round_ps(
         _mm256_mul_ps(x, _mm256_set1_ps(MC_TWO_OVER_PI)),
         _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
@@ -883,7 +921,7 @@ static inline __m256 mc_tan_ps(__m256 x) {
  * [-1, 1] so slight overshoot from dot products doesn't produce NaN.
  */
 
-static inline __m256 mc_asin_ps(__m256 x) {
+MC_INLINE __m256 mc_asin_ps(__m256 x) {
     const __m256 one  = _mm256_set1_ps(1.0f);
     const __m256 half = _mm256_set1_ps(0.5f);
     const __m256 pio2 = _mm256_set1_ps(1.57079632679489661923f);
@@ -910,7 +948,7 @@ static inline __m256 mc_asin_ps(__m256 x) {
     return _mm256_xor_ps(res, sign_x);
 }
 
-static inline __m256 mc_acos_ps(__m256 x) {
+MC_INLINE __m256 mc_acos_ps(__m256 x) {
     const __m256 one  = _mm256_set1_ps(1.0f);
     const __m256 half = _mm256_set1_ps(0.5f);
     const __m256 zero = _mm256_setzero_ps();
@@ -949,7 +987,7 @@ static inline __m256 mc_acos_ps(__m256 x) {
  * via (x-1)/(x+1). Polynomial then sees v in [-tan(pi/8), tan(pi/8)].
  */
 
-static inline __m256 mc_atan_ps(__m256 x) {
+MC_INLINE __m256 mc_atan_ps(__m256 x) {
     const __m256 one      = _mm256_set1_ps(1.0f);
     const __m256 sign_bit = _mm256_set1_ps(-0.0f);
 
@@ -982,7 +1020,7 @@ static inline __m256 mc_atan_ps(__m256 x) {
 /**
  * @brief atan2(y, x). (0, 0) returns NaN — mask at call site if needed.
  */
-static inline __m256 mc_atan2_ps(__m256 y, __m256 x) {
+MC_INLINE __m256 mc_atan2_ps(__m256 y, __m256 x) {
     const __m256 zero     = _mm256_setzero_ps();
     const __m256 sign_bit = _mm256_set1_ps(-0.0f);
     const __m256 pi       = _mm256_set1_ps(3.14159265358979323846f);
@@ -1007,7 +1045,7 @@ static inline __m256 mc_atan2_ps(__m256 y, __m256 x) {
 
 #define MC_LN2_OVER_2  (0.34657359027997265471f)
 
-static inline __m256 mc_sinh_ps(__m256 x) {
+MC_INLINE __m256 mc_sinh_ps(__m256 x) {
     const __m256 half  = _mm256_set1_ps(0.5f);
     const __m256 one   = _mm256_set1_ps(1.0f);
     const __m256 bound = _mm256_set1_ps(MC_LN2_OVER_2);
@@ -1026,7 +1064,7 @@ static inline __m256 mc_sinh_ps(__m256 x) {
     return _mm256_blendv_ps(sinh_small, sinh_big, big);
 }
 
-static inline __m256 mc_cosh_ps(__m256 x) {
+MC_INLINE __m256 mc_cosh_ps(__m256 x) {
     const __m256 half  = _mm256_set1_ps(0.5f);
     const __m256 one   = _mm256_set1_ps(1.0f);
     const __m256 bound = _mm256_set1_ps(MC_LN2_OVER_2);
@@ -1044,7 +1082,7 @@ static inline __m256 mc_cosh_ps(__m256 x) {
     return _mm256_blendv_ps(cosh_small, cosh_big, big);
 }
 
-static inline __m256 mc_tanh_ps(__m256 x) {
+MC_INLINE __m256 mc_tanh_ps(__m256 x) {
     const __m256 one   = _mm256_set1_ps(1.0f);
     const __m256 two   = _mm256_set1_ps(2.0f);
     const __m256 bound = _mm256_set1_ps(MC_LN2_OVER_2);
@@ -1072,7 +1110,7 @@ static inline __m256 mc_tanh_ps(__m256 x) {
  * bases is not provided here.
  */
 
-static inline __m256 mc_pow_ps(__m256 x, __m256 y) {
+MC_INLINE __m256 mc_pow_ps(__m256 x, __m256 y) {
     __m256 lx = mc_ln_ps(x);
     __m256 yl = _mm256_mul_ps(y, lx);
     return mc_exp_ps(yl);
