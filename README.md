@@ -1,7 +1,7 @@
 # JAVML2 — Just Another Vectorized Math Library 2
 
 Single-header AVX2 + FMA math for C, aimed at gamedev.
-Game-grade precision (~1-5 ULP), ~15-100× faster than scalar `libm`.
+Game-grade precision (~1-5 ULP). See benchmarks for speed. This is not exactly the best library you would want. More of a mini project ig. Please don't slap this anywhere you want. Review and refine to your tastes.
 
 ## What's in it
 
