@@ -661,8 +661,28 @@ static const float MC_TANH_COEFFS[5] = {
 /**
  * @brief sqrt(x). Maps to VSQRTPS; IEEE 754 correctly-rounded.
  * Negative lanes produce NaN.
+ * @note Hardware sqrt has reciprocal throughput ~6 cyc per 8 elements.
+ *       For throughput-bound workloads, prefer mc_sqrt_fast_ps.
  */
 MC_INLINE __m256 mc_sqrt_ps(__m256 x) { return _mm256_sqrt_ps(x); }
+
+/**
+ * @brief Fast sqrt(x) via rsqrt + Newton-Raphson — ~23 bits precision.
+ * 1.5-2× faster than hardware vsqrtps for bulk throughput because
+ * vrsqrtps has 1/cyc throughput vs 1/6cyc for vsqrtps.
+ * Good for particle physics, distance fields, procedural generation.
+ * @note sqrt(x) = x * rsqrt(x). Uses same NR pattern as mc_rsqrt_ps.
+ *       Negative lanes produce NaN (rsqrt of negative is NaN).
+ */
+MC_INLINE __m256 mc_sqrt_fast_ps(__m256 x) {
+	const __m256 half = _mm256_set1_ps(0.5f);
+	const __m256 ofh  = _mm256_set1_ps(1.5f);
+	__m256 y  = _mm256_rsqrt_ps(x);
+	__m256 y2 = _mm256_mul_ps(y, y);
+	__m256 t  = _mm256_fnmadd_ps(_mm256_mul_ps(x, y2), half, ofh);
+	y = _mm256_mul_ps(y, t);
+	return _mm256_mul_ps(x, y);
+}
 
 /**
  * @brief Fast 1/sqrt(x) — hardware seed only, ~11 bits. Particles, LODs.
@@ -675,11 +695,12 @@ MC_INLINE __m256 mc_rsqrt_fast_ps(__m256 x) { return _mm256_rsqrt_ps(x); }
  * Standard physics / lighting / normal-map precision.
  */
 MC_INLINE __m256 mc_rsqrt_ps(__m256 x) {
-    __m256 y  = _mm256_rsqrt_ps(x);
-    __m256 y2 = _mm256_mul_ps(y, y);
-    __m256 hx = _mm256_mul_ps(x, y2);
-    __m256 t  = _mm256_fnmadd_ps(hx, _mm256_set1_ps(0.5f), _mm256_set1_ps(1.5f));
-    return _mm256_mul_ps(y, t);
+	const __m256 half = _mm256_set1_ps(0.5f);
+	const __m256 ofh  = _mm256_set1_ps(1.5f);
+	__m256 y  = _mm256_rsqrt_ps(x);
+	__m256 y2 = _mm256_mul_ps(y, y);
+	__m256 t  = _mm256_fnmadd_ps(_mm256_mul_ps(x, y2), half, ofh);
+	return _mm256_mul_ps(y, t);
 }
 
 /**
@@ -687,15 +708,15 @@ MC_INLINE __m256 mc_rsqrt_ps(__m256 x) {
  * Use when the last ULP matters.
  */
 MC_INLINE __m256 mc_rsqrt_precise_ps(__m256 x) {
-    const __m256 half = _mm256_set1_ps(0.5f);
-    const __m256 ofh  = _mm256_set1_ps(1.5f);
-    __m256 y = _mm256_rsqrt_ps(x);
-    __m256 y2 = _mm256_mul_ps(y, y);
-    __m256 t  = _mm256_fnmadd_ps(_mm256_mul_ps(x, y2), half, ofh);
-    y = _mm256_mul_ps(y, t);
-    y2 = _mm256_mul_ps(y, y);
-    t  = _mm256_fnmadd_ps(_mm256_mul_ps(x, y2), half, ofh);
-    return _mm256_mul_ps(y, t);
+	const __m256 half = _mm256_set1_ps(0.5f);
+	const __m256 ofh  = _mm256_set1_ps(1.5f);
+	__m256 y  = _mm256_rsqrt_ps(x);
+	__m256 y2 = _mm256_mul_ps(y, y);
+	__m256 t  = _mm256_fnmadd_ps(_mm256_mul_ps(x, y2), half, ofh);
+	y  = _mm256_mul_ps(y, t);
+	y2 = _mm256_mul_ps(y, y);
+	t  = _mm256_fnmadd_ps(_mm256_mul_ps(x, y2), half, ofh);
+	return _mm256_mul_ps(y, t);
 }
 
 /**
@@ -1024,16 +1045,23 @@ MC_INLINE __m256 mc_atan2_ps(__m256 y, __m256 x) {
     const __m256 zero     = _mm256_setzero_ps();
     const __m256 sign_bit = _mm256_set1_ps(-0.0f);
     const __m256 pi       = _mm256_set1_ps(3.14159265358979323846f);
+    const __m256 pi_half  = _mm256_set1_ps(1.57079632679489661923f);
 
-    __m256 ratio  = _mm256_div_ps(y, x);
-    __m256 atan_r = mc_atan_ps(ratio);
+    __m256 y_sign  = _mm256_and_ps(y, sign_bit);
+    __m256 x_zero  = _mm256_cmp_ps(x, zero, _CMP_EQ_OQ);
+    __m256 y_zero  = _mm256_cmp_ps(y, zero, _CMP_EQ_OQ);
+    __m256 x0_res  = _mm256_xor_ps(pi_half, y_sign);          /* ±pi/2 */
+    x0_res         = _mm256_blendv_ps(x0_res, zero, y_zero);  /* atan2(0,0) -> 0 */
+
+    __m256 ratio   = _mm256_div_ps(y, x);
+    __m256 atan_r  = mc_atan_ps(ratio);
 
     __m256 x_neg     = _mm256_cmp_ps(x, zero, _CMP_LT_OQ);
-    __m256 y_sign    = _mm256_and_ps(y, sign_bit);
     __m256 signed_pi = _mm256_xor_ps(pi, y_sign);
     __m256 offset    = _mm256_and_ps(x_neg, signed_pi);
+    __m256 result    = _mm256_add_ps(atan_r, offset);
 
-    return _mm256_add_ps(atan_r, offset);
+    return _mm256_blendv_ps(result, x0_res, x_zero);
 }
 
 /* =====================================================================
